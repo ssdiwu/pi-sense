@@ -16,7 +16,7 @@
  * Config: ~/.pi/agent/pi-dvision.json (flat, like pi-autoname / pi-tinyfish).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
