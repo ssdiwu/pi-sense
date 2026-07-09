@@ -152,8 +152,25 @@ function formatModelRef(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
-function isVisionModel(model: { input?: ("text" | "image")[] } | undefined | null): boolean {
+type ActiveModel = { provider?: string; id?: string; input?: ("text" | "image")[] };
+
+function isVisionModel(model: ActiveModel | undefined | null): boolean {
   return !!model && Array.isArray(model.input) && model.input.includes("image");
+}
+
+/** Image handoff is only needed when the active model cannot accept images. */
+export function shouldHandoffImage(autoHandoff: boolean, model: ActiveModel | undefined | null): boolean {
+  return !!model?.provider && !!model.id && autoHandoff && !isVisionModel(model);
+}
+
+/**
+ * Video handoff is deliberately independent of the active model's image input.
+ * Pi's current model metadata only advertises text/image capability, so it
+ * cannot reliably express native-video support. Users with native-video models
+ * can opt out explicitly with `/sense video off`.
+ */
+export function shouldHandoffVideo(videoEnabled: boolean, videoModel: string | null): boolean {
+  return videoEnabled && !!videoModel;
 }
 
 function isImageConfigured(): boolean {
@@ -171,17 +188,12 @@ function effectiveVideoModel(): string | null {
 
 /** Whether video handoff is ready to run. */
 function isVideoConfigured(): boolean {
-  return config.enabled && config.videoEnabled && !!effectiveVideoModel();
+  return config.enabled && shouldHandoffVideo(config.videoEnabled, effectiveVideoModel());
 }
 
-/** Whether a given model should receive handoff (image → text). */
-function isHandoffTarget(
-  model: { provider?: string; id?: string; input?: ("text" | "image")[] } | undefined | null,
-): boolean {
-  if (!model || !model.provider || !model.id) return false;
-  // autoHandoff: describe images for every model whose input does not include "image".
-  if (config.autoHandoff && !isVisionModel(model)) return true;
-  return false;
+/** Whether a given model should receive image handoff. */
+function isImageHandoffTarget(model: ActiveModel | undefined | null): boolean {
+  return shouldHandoffImage(config.autoHandoff, model);
 }
 
 /** SHA-256 hash of image data, for cache key + dedup. */
@@ -635,12 +647,16 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName !== "read") return;
     const content = event.content;
     if (!Array.isArray(content)) return;
-    if (!isHandoffTarget(ctx.model)) return;
+    const imageTarget = isImageHandoffTarget(ctx.model);
+    const videoTarget = isVideoConfigured();
+    if (!imageTarget && !videoTarget) return;
 
     const imgs: ExtractedImage[] = [];
-    for (const block of content) {
-      const img = extractImageFromBlock(block);
-      if (img) imgs.push(img);
+    if (imageTarget) {
+      for (const block of content) {
+        const img = extractImageFromBlock(block);
+        if (img) imgs.push(img);
+      }
     }
 
     const readPath = typeof event.input?.path === "string" ? event.input.path : null;
@@ -656,7 +672,7 @@ export default function (pi: ExtensionAPI) {
     let changed = false;
     let descIdx = 0;
     for (const block of content) {
-      if (extractImageFromBlock(block) && isImageConfigured()) {
+      if (imageTarget && extractImageFromBlock(block) && isImageConfigured()) {
         next.push({
           type: "text",
           text: descs[descIdx++] ?? UNAVAILABLE,
@@ -664,6 +680,7 @@ export default function (pi: ExtensionAPI) {
         next.push(block as ImageContent);
         changed = true;
       } else if (
+        imageTarget &&
         typeof block === "object" &&
         (block as { type: string }).type === "text" &&
         typeof (block as { text: string }).text === "string" &&
@@ -676,7 +693,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    if (videoPath && isVideoConfigured()) {
+    if (videoPath && videoTarget) {
       next.push({ type: "text", text: makeVideoPathMarker(videoPath) } satisfies TextContent);
       changed = true;
     }
@@ -689,7 +706,9 @@ export default function (pi: ExtensionAPI) {
     if (!isConfigured()) return;
     const messages = event.messages as unknown as Array<Record<string, unknown>>;
     if (!Array.isArray(messages)) return;
-    if (!isHandoffTarget(ctx.model)) return;
+    const imageTarget = isImageHandoffTarget(ctx.model);
+    const videoTarget = isVideoConfigured();
+    if (!imageTarget && !videoTarget) return;
 
     const byHash = new Map<string, ExtractedImage>();
     const byVideoPath = new Map<string, VideoCandidate>();
@@ -701,8 +720,10 @@ export default function (pi: ExtensionAPI) {
       for (const block of content) {
         const img = extractImageFromBlock(block);
         if (img) {
-          anyImage = true;
-          byHash.set(imageHash(img.mimeType, img.data), img);
+          if (imageTarget) {
+            anyImage = true;
+            byHash.set(imageHash(img.mimeType, img.data), img);
+          }
           continue;
         }
         if (
@@ -743,7 +764,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const videoDescs = new Map<string, string>();
-    if (byVideoPath.size > 0 && isVideoConfigured()) {
+    if (byVideoPath.size > 0 && videoTarget) {
       for (const candidate of byVideoPath.values()) {
         videoDescs.set(candidate.resolved, await describeVideo(candidate.resolved, candidate.requestText, ctx));
       }
@@ -759,7 +780,7 @@ export default function (pi: ExtensionAPI) {
       const next: unknown[] = [];
       for (const block of content) {
         const img = extractImageFromBlock(block);
-        if (img && isImageConfigured()) {
+        if (img && imageTarget && isImageConfigured()) {
           next.push({ type: "text", text: descs.get(imageHash(img.mimeType, img.data)) ?? UNAVAILABLE });
           touched = true;
           continue;
@@ -803,15 +824,17 @@ export default function (pi: ExtensionAPI) {
     if (changed) return { messages: event.messages };
   });
 
-  // Notify when switching to a non-vision model that handoff is active.
+  // Image and video handoff have independent activation rules.
   pi.on("model_select", (_event, ctx) => {
     if (!ctx.hasUI) return;
     if (!isConfigured()) return;
     const model = ctx.model;
     if (!model) return;
-    if (isHandoffTarget(model) && !isVisionModel(model)) {
+    const imageTarget = isImageHandoffTarget(model);
+    const videoTarget = isVideoConfigured();
+    if (imageTarget || videoTarget) {
       ctx.ui.notify(
-        `pi-sense: active — image model=${config.visionModel ?? "(none)"}; video model=${effectiveVideoModel() ?? "(none)"}`,
+        `pi-sense: active — image handoff=${imageTarget ? "on" : "off (active model supports images)"}; video handoff=${videoTarget ? "on" : "off"}; video model=${effectiveVideoModel() ?? "(none)"}`,
         "info",
       );
     }
@@ -1060,9 +1083,9 @@ function showStatus(ctx: ExtensionCommandContext): void {
   lines.push(`Max video frames: ${config.maxVideoFrames}`);
   lines.push(`Adaptive sampling: ${config.enableAdaptiveSampling ? "on" : "off"} (reserved)`);
   const model = ctx.model;
-  const active = isConfigured() && model ? isHandoffTarget(model) : false;
-  lines.push(
-    `Active for current model (${model ? formatModelRef(model.provider, model.id) : "none"}): ${active ? "yes" : "no"}`,
-  );
+  const imageActive = isImageConfigured() && isImageHandoffTarget(model);
+  const videoActive = isVideoConfigured();
+  lines.push(`Image handoff for current model (${model ? formatModelRef(model.provider, model.id) : "none"}): ${imageActive ? "yes" : "no"}`);
+  lines.push(`Video handoff for local paths: ${videoActive ? "yes" : "no"} (independent of active-model image input)`);
   ctx.ui.notify(lines.join("\n"), "info");
 }

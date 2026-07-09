@@ -2,7 +2,7 @@
 
 A [pi coding agent](https://github.com/earendil-works/pi-coding-agent) extension that gives text-only models media understanding — images **and** local videos.
 
-When the active model doesn't support image/video input, `pi-sense` automatically describes the media with a vision-capable model you pick, then feeds the text description to the active model. For videos, it uses a **dual-path strategy**:
+For images, when the active model doesn't support image input, `pi-sense` automatically describes the image with a vision-capable model you pick. For local videos, video handoff is independent of the active model's image capability: when enabled, `pi-sense` describes the video and feeds the text result to the active model. Video understanding uses a **dual-path strategy**:
 
 - **Content questions** ("what happens in this video?") → native video model (MiniMax-M3)
 - **Temporal questions** ("what happens at 0:03?") → local frame extraction + ASR
@@ -84,8 +84,8 @@ Config lives at `~/.pi/agent/pi-sense.json`:
 |---|---|---|
 | `enabled` | `true` | Master switch for media handoff |
 | `visionModel` | `null` | Model used to describe images and video frames |
-| `autoHandoff` | `true` | Only inject into active models that lack image input |
-| `videoEnabled` | `true` | Enable local-video handoff |
+| `autoHandoff` | `true` | Only inject **image** descriptions into active models that lack image input |
+| `videoEnabled` | `true` | Enable local-video handoff, independent of active-model image input |
 | `videoModel` | `null` | Separate model for video; `null` = reuse `visionModel` |
 | `videoRoute` | `auto` | `auto` = detect temporal intent, `native` = force native, `frames` = force frames+ASR |
 | `videoFps` | `1` | Sampling fps for native video route (0.2–5) |
@@ -175,6 +175,7 @@ node scripts/verify-frames-chain.mjs
 
 - Video input is **local files only** — no YouTube URLs or screen capture
 - Native video is available through **MiniMax-M3**; Gemini and Grok use the frames + ASR route in 0.0.1
+- Video handoff is enabled for local paths even when the active model supports images; use `/sense video off` if the active model handles video directly
 - Native model timestamps are **not reliable** — use the frames route for temporal accuracy
 - Adaptive sampling is a **reserved setting**; the 0.0.1 local pipeline does not consume it
 

@@ -9,7 +9,7 @@ import { prepareVerifyBuild } from "./prepare-verify-build.mjs";
 
 const outDir = await prepareVerifyBuild();
 const { extractVideoPathsFromText } = await import(pathToFileURL(`${outDir}/video.js`).href);
-const { hasTemporalIntent } = await import(pathToFileURL(`${outDir}/index.js`).href);
+const { hasTemporalIntent, shouldHandoffImage, shouldHandoffVideo } = await import(pathToFileURL(`${outDir}/index.js`).href);
 
 let pass = 0;
 let fail = 0;
@@ -45,6 +45,15 @@ for (const text of [
   "then the user clicks the button", "first, describe what happens",
   "describe what happens after the intro", "what is this video about", "视频里用户做了什么操作",
 ]) check(`content: ${text}`, hasTemporalIntent(text), false);
+
+console.log("\n== independent media handoff gates ==");
+const textOnly = { provider: "test", id: "text-only", input: ["text"] };
+const imageOnly = { provider: "test", id: "image-only", input: ["text", "image"] };
+check("text-only model receives image handoff", shouldHandoffImage(true, textOnly), true);
+check("image-capable model skips image handoff", shouldHandoffImage(true, imageOnly), false);
+check("image-capable model still receives video handoff", shouldHandoffVideo(true, "minimax-cn/MiniMax-M3"), true);
+check("video handoff requires a configured video model", shouldHandoffVideo(true, null), false);
+check("video handoff respects /sense video off", shouldHandoffVideo(false, "minimax-cn/MiniMax-M3"), false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

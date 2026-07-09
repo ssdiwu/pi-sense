@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Fixed
+
+- Decoupled local-video handoff from the active model's image capability. Image-capable models that cannot process video now still receive local-video descriptions when `/sense video on` is configured.
+
 ## 0.0.1 - 2026-07-10
 
 First public release of `pi-sense`.
