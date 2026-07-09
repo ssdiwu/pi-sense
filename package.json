@@ -1,7 +1,7 @@
 {
-  "name": "pi-dvision",
-  "version": "0.1.0",
-  "description": "Pi extension that gives text-only models vision — describes images with a vision model you pick, then feeds the text description to non-vision models",
+  "name": "pi-sense",
+  "version": "0.2.0",
+  "description": "Pi extension that gives text-only models media understanding — describes images directly, routes local videos through native understanding for what-questions or frames+local ASR for when-questions, then feeds text to non-vision models",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -10,11 +10,16 @@
     "extension",
     "vision",
     "image",
-    "handoff"
+    "video",
+    "handoff",
+    "multimodal"
   ],
   "license": "MIT",
   "files": [
     "index.ts",
+    "video.ts",
+    "asr.ts",
+    "native-video.ts",
     "README.md",
     "AGENTS.md",
     "doc/README.md",

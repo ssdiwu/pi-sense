@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "video.ts", "asr.ts", "native-video.ts"]
 }
