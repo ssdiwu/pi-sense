@@ -174,7 +174,7 @@ node scripts/verify-frames-chain.mjs
 ## Limitations
 
 - Video input is **local files only** — no YouTube URLs or screen capture
-- Native video adapter is **MiniMax only** (Gemini/Grok adapters are stubs)
+- Native video is available through **MiniMax-M3**; Gemini and Grok use the frames + ASR route in 0.0.1
 - Native model timestamps are **not reliable** — use the frames route for temporal accuracy
 - Adaptive sampling is a **reserved setting**; the 0.0.1 local pipeline does not consume it
 

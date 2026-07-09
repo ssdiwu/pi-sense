@@ -18,5 +18,5 @@ First public release of `pi-sense`.
 ### Notes
 
 - The native video adapter is validated for `minimax-cn/MiniMax-M3`.
-- Gemini and Grok retain adapter seams but are not validated native-video providers in this release.
+- MiniMax-M3 is the native-video provider in this release; Gemini and Grok use the frames + ASR route.
 - Local video paths are supported; remote URLs and screen capture are out of scope.
