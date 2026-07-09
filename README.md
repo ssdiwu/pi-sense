@@ -1,67 +1,66 @@
 # pi-sense
 
-A `pi` extension that gives text-only models media understanding: when the active model doesn't support image input, `pi-sense` describes images directly and expands local video paths into text via the same non-vision handoff target.
+A [pi coding agent](https://github.com/earendil-works/pi-coding-agent) extension that gives text-only models media understanding — images **and** local videos.
 
-> **Status**: Image handoff is shipped and working. Video handoff is wired as a dual path and validated on real chains: native video understanding for content questions (`what`), and frame extraction + local ASR for temporal questions (`when`). The design basis is documented in `doc/决策档案/0001-视频理解双路线-原生内容理解与抽帧时间感知分流.md` and `doc/20-能力参考/01-视频理解扩展调研参考.md`.
+When the active model doesn't support image/video input, `pi-sense` automatically describes the media with a vision-capable model you pick, then feeds the text description to the active model. For videos, it uses a **dual-path strategy**:
 
-## What it does (current)
+- **Content questions** ("what happens in this video?") → native video model (MiniMax-M3)
+- **Temporal questions** ("what happens at 0:03?") → local frame extraction + ASR
 
-When the active model lacks image input, `pi-sense` intercepts media in two places:
-
-1. **`tool_result` (read)** — Primary injection: image blocks are described immediately; local video reads are marked with their resolved file path so the next stage can route them correctly.
-2. **`context`** — Fallback / routing stage: remaining image blocks are swapped for cached text descriptions, and local video paths are expanded into `[Video: ...]` text using either the native route or the frames+ASR route.
-
-Image descriptions are cached per image hash. Video descriptions are cached per file hash + request hash + route/model parameters, so the same video question is not reprocessed every turn while different questions still get different answers.
-
-## Install
-
-### From local path
+## Quick Start
 
 ```bash
-pi install /absolute/path/to/pi-sense
-```
+# 1. Install
+pi install pi-sense
 
-Or add to `~/.pi/agent/settings.json` `packages` array.
-
-> **不要把 `index.ts` 拷贝到 `~/.pi/agent/extensions/` 下作为加载方式。** 通过 `pi install` 或 `settings.json` 的 `packages` 注册加载。
-
-## Configure
-
-### Set the vision model
-
-```bash
+# 2. Configure a vision/video model
 /sense model minimax-cn/MiniMax-M3
+
+# 3. Enable video handoff
+/sense video on
 ```
 
-### Check status
+That's it. Now when you ask pi about an image or local video file, it will describe the media and feed the text to the active model — even if that model doesn't support images or videos.
 
-```bash
-/sense status
+## How It Works
+
+```
+agent reads image / mentions video path
+  │
+  ▼
+tool_result ── image → vision model → text description
+  │            video → path marker for routing
+  ▼
+context     ── remaining images → cached text
+  │            video path → native (what) or frames+ASR (when)
+  ▼
+text-only model receives text, not raw media
 ```
 
-### Commands
+## Commands
 
 ```
 /sense                                 Show status
 /sense status                          Same as /sense
-/sense model <provider/id>             Set the vision model
+/sense model <provider/id>             Set the vision/video model
 /sense video <on|off>                  Toggle video handoff
-/sense video-model <provider/id>       Set the video model (blank to reuse vision model)
+/sense video-model <provider/id>       Set a separate video model (blank = reuse vision model)
 /sense route <auto|native|frames>      Set video route selection
-/sense fps <0.2-5>                     Set native-video sampling fps (current native adapter: MiniMax)
-/sense thinking <on|off>               Toggle native-video thinking (current native adapter: MiniMax)
-/sense asr <auto|path>                 Set the ASR tool (`whisper-cli` binary path or faster-whisper `venv`/`python` path)
-/sense frames <n>                      Set the max frame count (default 120)
-/sense adaptive <on|off>               Toggle adaptive local re-sampling (reserved, default off)
+/sense fps <0.2-5>                     Set native-video sampling fps
+/sense thinking <on|off>               Toggle native-video thinking mode
+/sense asr <auto|path>                 Set ASR tool (auto, or path to whisper-cli / venv python)
+/sense frames <n>                      Set max frame count (1–600; default 120)
+/sense adaptive <on|off>               Set the reserved adaptive-sampling preference
 /sense enable                          Enable handoff
 /sense disable                         Disable handoff
 /sense auto <on|off>                   Toggle auto handoff for non-vision models
-/sense clear                           Clear the configured vision model
+/sense clear                           Clear the configured model
 /sense help                            Show usage
-(legacy: /dvision ... still works as an alias)
 ```
 
-## Config file
+Legacy alias: `/dvision` still works and delegates to `/sense`.
+
+## Configuration
 
 Config lives at `~/.pi/agent/pi-sense.json`:
 
@@ -72,41 +71,116 @@ Config lives at `~/.pi/agent/pi-sense.json`:
   "autoHandoff": true,
   "videoEnabled": true,
   "videoModel": null,
-  "asrProvider": "auto",
-  "maxVideoFrames": 120,
-  "enableAdaptiveSampling": false,
   "videoRoute": "auto",
   "videoFps": 1,
-  "videoThinking": false
+  "videoThinking": false,
+  "asrProvider": "auto",
+  "maxVideoFrames": 120,
+  "enableAdaptiveSampling": false
 }
 ```
 
-> `videoModel` of `null` means the video pipeline reuses `visionModel`. `videoRoute=auto` chooses native for content questions and frames+ASR for temporal questions. Current native adapter coverage is MiniMax only; other providers still fall back to frames+ASR. MiniMax native upload uses the Files API with a 512MB limit, and preserves the source container MIME (`mp4/mov/webm/mkv/...`) when uploading.
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Master switch for media handoff |
+| `visionModel` | `null` | Model used to describe images and video frames |
+| `autoHandoff` | `true` | Only inject into active models that lack image input |
+| `videoEnabled` | `true` | Enable local-video handoff |
+| `videoModel` | `null` | Separate model for video; `null` = reuse `visionModel` |
+| `videoRoute` | `auto` | `auto` = detect temporal intent, `native` = force native, `frames` = force frames+ASR |
+| `videoFps` | `1` | Sampling fps for native video route (0.2–5) |
+| `videoThinking` | `false` | Enable MiniMax adaptive thinking for native route |
+| `asrProvider` | `auto` | `auto` = whisper-cli → faster-whisper, or explicit path |
+| `maxVideoFrames` | `120` | Frame-route budget (1–600) |
+| `enableAdaptiveSampling` | `false` | Reserved preference; not consumed by the 0.0.1 pipeline |
 
-## How it works
+## Video Understanding
 
+### Native Route (Content / "what")
+
+When you ask "describe this video" or "what is this video about", pi-sense uploads the video to MiniMax's Files API and asks the model directly:
+
+- **Supported provider**: MiniMax-M3 (via `minimax-cn/MiniMax-M3`)
+- Gemini and Grok retain provider adapter seams; in 0.0.1 they use the frames route
+- Upload limit: 512 MB
+- Supported containers: mp4, mov, webm, mkv, avi, flv, wmv, m4v, mpg, mpeg, 3gp, ogv, mts, m2ts
+
+### Frames + ASR Route (Temporal / "when")
+
+When you ask "what happens at 0:03?" or "what's the timeline?", pi-sense does it locally:
+
+1. **Frame extraction** — ffmpeg samples frames (≤1 min: 0.5s interval; >1 min: evenly within the configured budget, 120 by default and 600 maximum)
+2. **Audio extraction** — ffmpeg extracts 16 kHz mono WAV
+3. **ASR** — whisper-cli (preferred) or faster-whisper (fallback) transcribes with timestamps
+4. **Frame description** — each frame is described by the configured vision model
+5. **Timeline merge** — frame descriptions + ASR segments are combined into a temporal timeline
+
+This route provides **deterministic, verifiable** time-content mapping — unlike native video models whose timestamps drift from real duration.
+
+### Auto Routing
+
+`videoRoute: auto` (default) detects temporal intent from the user's question:
+
+- **Triggers frames route**: "第3秒", "1:30", "timeline", "at what time", "timestamp", "先后顺序"
+- **Triggers native route**: "描述视频", "describe this video", "what is this about"
+
+## External Dependencies
+
+| Tool | Required for | How to install |
+|---|---|---|
+| `ffmpeg` / `ffprobe` | Frame + audio extraction | `brew install ffmpeg` |
+| `whisper-cli` | ASR (preferred) | `brew install whisper-cpp` + download a ggml model |
+| faster-whisper | ASR (fallback) | `pip install faster-whisper` in a venv at `~/.venvs/video-asr` |
+
+You only need ffmpeg for the frames route. The native route works without any local tools.
+
+## Install
+
+### From npm
+
+```bash
+pi install pi-sense
 ```
-agent reads image file / mentions local video path
-  │
-  ▼
-tool_result (read)  ── image block → vision model → text description
-  │                    local video read → path marker for the routing stage
-  ▼
-context             ── remaining images → cached text description
-  │                    local video path → native route (what) OR frames+ASR route (when)
-  ▼
-text-only model receives text, not image/video
+
+### From source
+
+```bash
+git clone https://github.com/ssdiwu/pi-sense.git
+pi install /path/to/pi-sense
 ```
 
 ## Development
 
 ```bash
+git clone https://github.com/ssdiwu/pi-sense.git
+cd pi-sense
+npm install
 npm run typecheck
 ```
 
+### Verification Scripts
+
+```bash
+# Unit checks for path detection + temporal intent (no API key needed)
+node scripts/verify-paths.mjs
+
+# Native route real-chain (needs minimax-cn API key in ~/.pi/agent/auth.json)
+node scripts/verify-native-chain.mjs
+
+# Frames + ASR real-chain (needs ffmpeg + whisper)
+node scripts/verify-frames-chain.mjs
+```
+
+## Limitations
+
+- Video input is **local files only** — no YouTube URLs or screen capture
+- Native video adapter is **MiniMax only** (Gemini/Grok adapters are stubs)
+- Native model timestamps are **not reliable** — use the frames route for temporal accuracy
+- Adaptive sampling is a **reserved setting**; the 0.0.1 local pipeline does not consume it
+
 ## Changelog
 
-See `CHANGELOG.md`.
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

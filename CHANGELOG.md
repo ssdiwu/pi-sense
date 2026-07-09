@@ -1,21 +1,22 @@
 # Changelog
 
-## 0.2.0 - 2026-07-09 (in development)
+All notable changes to this project are documented here.
 
-### Changed
-- Renamed from `pi-dvision` to `pi-sense` (including the project directory, package name, config file `pi-dvision.json` → `pi-sense.json`, command `/dvision` → `/sense`, and the internal `SenseConfig` type).
-- `/dvision` is kept as a legacy alias that delegates to `/sense`.
-- Repositioned as a media handoff extension with dual-path video understanding: native video for content questions (`what`), frames + local ASR for temporal questions (`when`).
+## 0.0.1 - 2026-07-10
 
-### Notes
-- MiniMax native-video integration reuses pi's real `auth.json` / `models.json` via `ModelRegistry`, uploads with Files API, and sends `mm_file://` through the `/anthropic` route.
-- Temporal questions still use the deterministic frames + local ASR route because native video timestamps/order/direction are not treated as ground truth.
-
-## 0.1.0 - 2026-07-08
+First public release of `pi-sense`.
 
 ### Added
-- Initial `pi-dvision` release.
-- Give text-only pi models vision: describe images with a vision model you pick via `/dvision model <provider/id>`, then feed the text description to non-vision models.
-- Two-stage injection pipeline: `tool_result` (read) as primary + `context` as fallback.
-- Per-image independent parallel vision calls with a simple in-memory cache (keyed by image hash).
-- `/dvision` command matrix: `model`, `status`, `enable`, `disable`, `auto`, `clear`, `help`.
+
+- Image handoff for active Pi models without image input.
+- Local video handoff with two routes:
+  - MiniMax-M3 native video understanding for content questions.
+  - ffmpeg frame extraction plus local ASR for temporal questions.
+- `/sense` command set for model selection, video routing, ASR selection, frame budget, and handoff status.
+- Reproducible verification scripts for path detection, native MiniMax video understanding, and frames + ASR processing.
+
+### Notes
+
+- The native video adapter is validated for `minimax-cn/MiniMax-M3`.
+- Gemini and Grok retain adapter seams but are not validated native-video providers in this release.
+- Local video paths are supported; remote URLs and screen capture are out of scope.

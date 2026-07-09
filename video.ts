@@ -154,6 +154,8 @@ export interface ExtractedFrames {
 	dir: string;
 	/** absolute paths to extracted frames, in order */
 	files: string[];
+	/** actual sample timestamps aligned one-to-one with files */
+	timestamps: number[];
 	plan: FramePlan;
 }
 
@@ -182,6 +184,7 @@ export async function extractFrames(
 ): Promise<ExtractedFrames> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-sense-frames-"));
 	const files: string[] = [];
+	const timestamps: number[] = [];
 
 	// Build a select expression that grabs the frame nearest each timestamp.
 	// We run one ffmpeg pass per timestamp for predictability (select with many
@@ -211,6 +214,7 @@ export async function extractFrames(
 						{ timeout: 30_000, encoding: "utf-8" },
 					);
 					files.push(out);
+					timestamps.push(t);
 				} catch {
 					// boundary / transient frame failure — skip, continue with the rest
 					failures++;
@@ -223,14 +227,24 @@ export async function extractFrames(
 			// single-pass: fps = count/duration, scene-independent uniform sample
 			const fps = (plan.count / plan.duration).toFixed(4);
 			const pattern = join(dir, "frame_%04d.jpg");
-			await execFileAsync(
+			const { stderr } = await execFileAsync(
 				"ffmpeg",
-				["-y", "-i", videoPath, "-vf", `fps=${fps},scale=512:-1`, "-pix_fmt", "yuvj420p", "-q:v", "5", pattern],
+				["-y", "-i", videoPath, "-vf", `fps=${fps},showinfo,scale=512:-1`, "-pix_fmt", "yuvj420p", "-q:v", "5", pattern],
 				{ timeout: 120_000, encoding: "utf-8" },
 			);
-			// collect generated files in order
-			const names = (await readdir(dir)).sort();
-			for (const n of names) if (n.startsWith("frame_") && n.endsWith(".jpg")) files.push(join(dir, n));
+			// showinfo reports the output frame PTS. Do not infer time from the
+			// requested plan: ffmpeg may drop or duplicate frames while decoding.
+			const actualTimestamps = [...stderr.matchAll(/pts_time:([\d.-]+)/g)]
+				.map((match) => Number.parseFloat(match[1]))
+				.filter((timestamp) => Number.isFinite(timestamp));
+			const names = (await readdir(dir)).filter((name) => name.startsWith("frame_") && name.endsWith(".jpg")).sort();
+			if (actualTimestamps.length !== names.length) {
+				throw new Error(`ffmpeg reported ${actualTimestamps.length} frame timestamps for ${names.length} frame files`);
+			}
+			for (let index = 0; index < names.length; index++) {
+				files.push(join(dir, names[index]));
+				timestamps.push(actualTimestamps[index]);
+			}
 		}
 	} catch (err) {
 		// best-effort cleanup
@@ -245,7 +259,7 @@ export async function extractFrames(
 		throw { error: "frame extraction produced no frames", stage: "frames" } as VideoProcessError;
 	}
 
-	return { dir, files, plan };
+	return { dir, files, timestamps, plan };
 }
 
 /**

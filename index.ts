@@ -317,7 +317,7 @@ function requestTextForMarker(recentTexts: string[]): string {
   return recentTexts.slice(-2).join("\n").trim();
 }
 
-function hasTemporalIntent(text: string): boolean {
+export function hasTemporalIntent(text: string): boolean {
   if (!text) return false;
   const normalized = text.toLowerCase();
   const directPatterns = [
@@ -408,7 +408,7 @@ async function describeVideoViaFrames(
       asr = null;
     }
 
-    return buildFramesVideoFence(model, durationSec, summarizeFrameTimeline(plan.timestamps, descriptions), asr);
+    return buildFramesVideoFence(model, durationSec, summarizeFrameTimeline(frames.timestamps, descriptions), asr);
   } finally {
     if (framesDir) await rm(framesDir, { recursive: true, force: true }).catch(() => {});
     await rm(workDir, { recursive: true, force: true }).catch(() => {});

@@ -1,6 +1,6 @@
 {
   "name": "pi-sense",
-  "version": "0.2.0",
+  "version": "0.0.1",
   "description": "Pi extension that gives text-only models media understanding — describes images directly, routes local videos through native understanding for what-questions or frames+local ASR for when-questions, then feeds text to non-vision models",
   "type": "module",
   "keywords": [
@@ -20,19 +20,20 @@
     "video.ts",
     "asr.ts",
     "native-video.ts",
+    "scripts",
+    "doc",
     "README.md",
     "AGENTS.md",
-    "doc/README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-ai": "*"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^24.3.0",
     "typescript": "^5.9.3"
   },
@@ -43,5 +44,13 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ssdiwu/pi-sense.git"
+  },
+  "homepage": "https://github.com/ssdiwu/pi-sense#readme",
+  "bugs": {
+    "url": "https://github.com/ssdiwu/pi-sense/issues"
   }
 }
