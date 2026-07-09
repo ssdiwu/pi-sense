@@ -1,6 +1,6 @@
 {
   "name": "pi-sense",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Pi extension that gives text-only models media understanding — describes images directly, routes local videos through native understanding for what-questions or frames+local ASR for when-questions, then feeds text to non-vision models",
   "type": "module",
   "keywords": [
