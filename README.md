@@ -58,8 +58,6 @@ text-only model receives text, not raw media
 /sense help                            Show usage
 ```
 
-Legacy alias: `/dvision` still works and delegates to `/sense`.
-
 ## Configuration
 
 Config lives at `~/.pi/agent/pi-sense.json`:

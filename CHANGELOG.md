@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Removed
+
+- `/dvision` legacy alias for `/sense`. The command has been removed from the registry and the README no longer advertises it. Use `/sense` directly.
+
 ## 0.0.2 - 2026-07-10
 
 ### Fixed

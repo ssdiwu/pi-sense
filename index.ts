@@ -846,14 +846,6 @@ export default function (pi: ExtensionAPI) {
       await handleCommand(ctx, args.trim());
     },
   });
-
-  // Legacy alias: /dvision still works, delegates to /sense.
-  pi.registerCommand("dvision", {
-    description: "(legacy alias for /sense) Configure media handoff",
-    handler: async (args, ctx) => {
-      await handleCommand(ctx, args.trim());
-    },
-  });
 }
 
 // ─── Command Handler ─────────────────────────────────────────────────────────
