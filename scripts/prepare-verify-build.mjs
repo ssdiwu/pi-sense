@@ -9,13 +9,13 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = join(repoRoot, ".verify-build");
+const outDir = join(repoRoot, `.verify-build-${process.pid}`);
 
 export async function prepareVerifyBuild() {
   await rm(outDir, { recursive: true, force: true });
   await execFileAsync(
     "npx",
-    ["--no-install", "tsc", "index.ts", "video.ts", "asr.ts", "native-video.ts", "--outDir", ".verify-build", "--module", "ESNext", "--target", "ES2022", "--moduleResolution", "Bundler", "--skipLibCheck"],
+    ["--no-install", "tsc", "index.ts", "video.ts", "asr.ts", "native-video.ts", "--outDir", outDir, "--module", "ESNext", "--target", "ES2022", "--moduleResolution", "Bundler", "--skipLibCheck"],
     { cwd: repoRoot, encoding: "utf8" },
   );
 

@@ -1,14 +1,13 @@
 /**
  * video.ts — local video preprocessing pipeline for pi-sense.
  *
- * Responsibilities:
- *   - detect video file paths (in read tool results, user prompt text)
- *   - compute the frame budget (≤1min 0.5s/frame, >1min capped at maxFrames)
- *   - extract frames with ffmpeg to a temp dir
- *   - extract audio with ffmpeg (16kHz mono WAV)
+ *   - detect local video and audio file paths (in read tool results, user prompt text)
+ *   - compute video frame budgets (≤1min 0.5s/frame, >1min capped at maxFrames)
+ *   - extract video frames with ffmpeg to a temp dir
+ *   - normalize audio to 16kHz mono WAV for local ASR
  *
- * This module only orchestrates external CLIs (ffmpeg / ffprobe / whisper). It
- * does NOT bundle models or native addons. ASR lives in asr.ts.
+ * This module only orchestrates external CLIs (ffmpeg / ffprobe). It does NOT
+ * bundle models or native addons. ASR lives in asr.ts.
  *
  * Frame budget rule (locked in grill alignment):
  *   - duration ≤ 60s → interval 0.5s (so a 60s clip yields 120 frames)
@@ -25,32 +24,36 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// ─── Video path / block detection ───────────────────────────────────────────
+// ─── Local media path detection ─────────────────────────────────────────────
 
 export const VIDEO_EXTENSIONS = [
 	".mp4", ".mov", ".webm", ".mkv", ".avi", ".flv", ".wmv", ".m4v",
 	".mpg", ".mpeg", ".3gp", ".ogv", ".mts", ".m2ts",
 ] as const;
 
-const VIDEO_MIME_PREFIX = "video/";
+export const AUDIO_EXTENSIONS = [
+	".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma", ".aif", ".aiff",
+] as const;
+
+function isKnownExtension(ext: string, extensions: readonly string[]): boolean {
+	return extensions.includes(ext.toLowerCase());
+}
 
 /** Is this extension a recognized video container? */
 export function isVideoExtension(ext: string): boolean {
-	return (VIDEO_EXTENSIONS as readonly string[]).includes(ext.toLowerCase());
+	return isKnownExtension(ext, VIDEO_EXTENSIONS);
 }
 
-/**
- * Scan text for local video file paths. Matches:
- *   - absolute paths /home/x/vid.mp4, /Users/x/vid.mp4, C:\\x\\vid.mp4
- *   - relative paths ./vid.mp4, ../vid.mp4, vid.mp4 (with a known video ext)
- * Returns absolute-looking or relative candidate strings (deduped, order preserved).
- */
-export function extractVideoPathsFromText(text: string): string[] {
+/** Is this extension a recognized local audio format? */
+export function isAudioExtension(ext: string): boolean {
+	return isKnownExtension(ext, AUDIO_EXTENSIONS);
+}
+
+function extractLocalPaths(text: string, extensions: readonly string[]): string[] {
 	if (!text) return [];
 	const seen = new Set<string>();
 	const out: string[] = [];
-
-	const extGroup = (VIDEO_EXTENSIONS as readonly string[]).map((e) => e.replace(/\./g, "\\.")).join("|");
+	const extGroup = extensions.map((extension) => extension.replace(/\./g, "\\.")).join("|");
 	const boundary = String.raw`(?=$|[\s)\]>'"\x60，。！？、,.!?:;])`;
 	const patterns = [
 		new RegExp(String.raw`file://[^\n"'\x60]+?(${extGroup})${boundary}`, "gi"),
@@ -59,25 +62,31 @@ export function extractVideoPathsFromText(text: string): string[] {
 	];
 
 	for (const re of patterns) {
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(text)) !== null) {
-			let candidate = m[0]
-			.replace(/^[\s("'`]+/u, "")
-			.replace(/[)\]>'"，。！？、,.!?:;]+$/u, "");
-			if (candidate.startsWith("file://")) {
-				candidate = decodeURI(candidate.slice("file://".length));
-			}
+		let match: RegExpExecArray | null;
+		while ((match = re.exec(text)) !== null) {
+			let candidate = match[0]
+				.replace(/^[\s("'`]+/u, "")
+				.replace(/[)\]>'"，。！？、,.!?:;]+$/u, "");
+			if (candidate.startsWith("file://")) candidate = decodeURI(candidate.slice("file://".length));
 			if (candidate.startsWith("//") && !candidate.startsWith("///")) continue;
 			candidate = candidate.replace(/^["'`]+|["'`]+$/g, "");
 			const ext = candidate.slice(candidate.lastIndexOf(".")).toLowerCase();
-			if (!isVideoExtension(ext)) continue;
-			if (seen.has(candidate)) continue;
+			if (!isKnownExtension(ext, extensions) || seen.has(candidate)) continue;
 			seen.add(candidate);
 			out.push(candidate);
 		}
 	}
-	// Remove candidates that are suffixes of longer candidates (e.g. "file.mp4" when "/path/file.mp4" or "my file.mp4" exists)
-	return out.filter((c) => !out.some((other) => other !== c && other.length > c.length && other.endsWith(c) && /[\s\/]/.test(other[other.length - c.length - 1] ?? "")));
+	return out.filter((candidate) => !out.some((other) => other !== candidate && other.length > candidate.length && other.endsWith(candidate) && /[\s/]/.test(other[other.length - candidate.length - 1] ?? "")));
+}
+
+/** Scan text for local video file paths. */
+export function extractVideoPathsFromText(text: string): string[] {
+	return extractLocalPaths(text, VIDEO_EXTENSIONS);
+}
+
+/** Scan text for local audio file paths. */
+export function extractAudioPathsFromText(text: string): string[] {
+	return extractLocalPaths(text, AUDIO_EXTENSIONS);
 }
 
 // ─── ffprobe / ffmpeg helpers ───────────────────────────────────────────────
@@ -263,24 +272,29 @@ export async function extractFrames(
 }
 
 /**
- * Extract audio as 16kHz mono WAV (whisper-friendly). Throws VideoProcessError on failure.
+ * Normalize any local audio stream to 16kHz mono WAV (whisper-friendly).
+ * Throws VideoProcessError on failure.
  */
-export async function extractAudio(videoPath: string, outDir: string, signal?: AbortSignal): Promise<AudioFile> {
+export async function normalizeAudio(audioPath: string, outDir: string, signal?: AbortSignal): Promise<AudioFile> {
 	const path = join(outDir, "audio.wav");
 	try {
 		if (signal?.aborted) throw new Error("aborted");
 		await execFileAsync(
 			"ffmpeg",
-			["-y", "-i", videoPath, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", path],
+			["-y", "-i", audioPath, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", path],
 			{ timeout: 120_000, encoding: "utf-8" },
 		);
 		return { path };
 	} catch (err) {
 		const stderr = (err as { stderr?: string }).stderr;
 		const msg = stderr ? stripAnsi(stderr) : err instanceof Error ? err.message : String(err);
-		// audio extraction can legitimately fail for silent/mux-less videos; surface as soft error
-		throw { error: `audio extraction failed: ${msg.slice(0, 300)}`, stage: "audio" } as VideoProcessError;
+		throw { error: `audio normalization failed: ${msg.slice(0, 300)}`, stage: "audio" } as VideoProcessError;
 	}
+}
+
+/** Extract a video's audio stream in the shared ASR-friendly format. */
+export async function extractAudio(videoPath: string, outDir: string, signal?: AbortSignal): Promise<AudioFile> {
+	return normalizeAudio(videoPath, outDir, signal);
 }
 
 // ─── Temp workspace ─────────────────────────────────────────────────────────
@@ -290,11 +304,10 @@ export async function makeWorkDir(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "pi-sense-"));
 }
 
-/** Hash a file's first 64KB + total size for caching/dedup. Only reads the
- *  head of the file (never loads a full video into memory). */
-export async function hashVideoFile(videoPath: string): Promise<string> {
+/** Hash a local media file's first 64KB + total size for caching/dedup. */
+export async function hashLocalFile(path: string): Promise<string> {
 	const HEAD = 64 * 1024;
-	const fh = await open(videoPath, "r");
+	const fh = await open(path, "r");
 	try {
 		const { size } = await fh.stat();
 		const len = Math.min(HEAD, size);

@@ -1,6 +1,6 @@
 # pi-sense 文档
 
-`pi-sense` 为 Pi active model（当前模型）提供图像和本地视频理解的文字 handoff。图像 handoff 只服务不支持图片输入的当前模型；本地视频 handoff 独立于当前模型的图片能力。它将媒体交给已配置的视觉模型处理，再把结构化文本注入当前会话。
+`pi-sense` 为 Pi active model（当前模型）提供图像、本地音频和本地视频理解的文字 handoff。图像 handoff 只服务不支持图片输入的当前模型；本地音频与视频 handoff 独立于当前模型的图片能力。它将媒体处理为结构化文本并注入当前会话。
 
 > 安装、配置与命令说明见项目根目录的 [`README.md`](../README.md)。
 
@@ -9,6 +9,10 @@
 ### 图像 handoff
 
 当当前模型不支持图像输入且 `autoHandoff=true` 时，`pi-sense` 描述图片并注入 `[Image: ...]` 文本。图片描述按内容 hash 缓存。
+
+### 本地音频 handoff
+
+音频仅支持本地文件路径（用户输入路径或 `read` 工具读取的路径），格式为 `mp3`、`wav`、`m4a`、`aac`、`flac`、`ogg`、`opus`、`wma`、`aif` 和 `aiff`。只要 `/sense audio on`，扩展就用 `ffmpeg` 规范化为 16 kHz 单声道 WAV，再用本地 ASR 转写为带时间戳的 `[Audio: ...]` 文本；它不需要配置 vision model（视觉模型）或 video model（视频模型）。
 
 ### 本地视频 handoff
 
@@ -23,23 +27,22 @@
 
 ## 注入与缓存
 
-媒体处理使用两个 Pi extension hook：
+1. `tool_result`：图片立即描述；本地音频和视频写入路径 marker（路径标记）。
+2. `context`：处理未覆盖的图片，并将音频路径展开成 `[Audio: ...]` 转写围栏、视频路径展开成 `[Video: ...]` 描述围栏。
 
-1. `tool_result`：图片立即描述；本地视频写入路径 marker。
-2. `context`：处理未覆盖的图片，并将视频路径展开成 `[Video: ...]` 描述围栏。
-
-视频缓存键包含文件 hash、用户问题 hash、路线、模型与处理参数。因此同一个视频的同一个问题不会重复处理，而不同问题不会错误复用答案。
+视频缓存键包含文件 hash、用户问题 hash、路线、模型与处理参数。因此同一个视频的同一个问题不会重复处理，而不同问题不会错误复用答案。音频缓存键包含文件 hash 与 ASR 配置，同一会话不会重复转写相同文件。
 
 ## 运行时依赖
 
+- 独立音频路线：`ffmpeg` 与本地 ASR；ASR 优先使用 `whisper-cli`，不可用时回退到本地 faster-whisper Python 环境。
 - 原生视频路线：仅需已配置的 MiniMax 凭据；视频文件上限为 512 MB。
-- 时间感知路线：`ffmpeg`/`ffprobe`；帧预算默认 120、可配置为 1–600；ASR 优先使用 `whisper-cli`，不可用时回退到本地 faster-whisper Python 环境。
+- 时间感知视频路线：`ffmpeg`/`ffprobe`；帧预算默认 120、可配置为 1–600；复用同一套本地 ASR。
 - `pi-sense` 不打包模型、不安装 native addon，也不上传凭据。
 
 ## 不在当前范围内
 
-- YouTube 或其他远程视频 URL
-- 实时录制、屏幕捕获
+- YouTube 或其他远程音视频 URL
+- 实时录制、屏幕捕获或实时音频
 - Grok/Gemini 原生 adapter 的生产联调
 - 把原生视频模型输出作为时间、顺序或拖动方向的 ground truth
 - 自适应局部补帧（0.0.1 保留配置项，但本地处理路线不消费该设置）

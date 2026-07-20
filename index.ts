@@ -30,12 +30,15 @@ import { classifyProvider, describeVideoNatively } from "./native-video";
 import {
   computeFramePlan,
   extractAudio,
+  extractAudioPathsFromText,
   extractFrames,
   extractVideoPathsFromText,
   getVideoDuration,
-  hashVideoFile,
+  hashLocalFile,
+  isAudioExtension,
   isVideoExtension,
   makeWorkDir,
+  normalizeAudio,
 } from "./video";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -44,6 +47,7 @@ interface SenseConfig {
   enabled: boolean;
   visionModel: string | null;
   autoHandoff: boolean;
+  audioEnabled: boolean;
   // Video handoff fields
   videoEnabled: boolean;
   videoModel: string | null; // null → reuse visionModel
@@ -66,8 +70,9 @@ const DEFAULT_CONFIG: SenseConfig = {
   enabled: true,
   visionModel: null,
   autoHandoff: true,
-  videoEnabled: true,
+  audioEnabled: true,
   videoModel: null,
+  videoEnabled: true,
   asrProvider: "auto",
   maxVideoFrames: MAX_VIDEO_FRAMES_DEFAULT,
   enableAdaptiveSampling: false,
@@ -93,6 +98,7 @@ function normalizeConfig(raw: unknown): SenseConfig {
     base.visionModel = null;
   }
   if (typeof obj.autoHandoff === "boolean") base.autoHandoff = obj.autoHandoff;
+  if (typeof obj.audioEnabled === "boolean") base.audioEnabled = obj.audioEnabled;
   // Video fields
   if (typeof obj.videoEnabled === "boolean") base.videoEnabled = obj.videoEnabled;
   if (typeof obj.videoModel === "string" && obj.videoModel.includes("/")) {
@@ -178,12 +184,17 @@ function isImageConfigured(): boolean {
 }
 
 function isConfigured(): boolean {
-  return isImageConfigured() || isVideoConfigured();
+  return isImageConfigured() || isAudioConfigured() || isVideoConfigured();
 }
 
 /** Effective model for video frame description: videoModel if set, else visionModel. */
 function effectiveVideoModel(): string | null {
   return config.videoModel ?? config.visionModel;
+}
+
+/** Whether standalone local-audio transcription is ready to run. */
+function isAudioConfigured(): boolean {
+  return config.enabled && config.audioEnabled;
 }
 
 /** Whether video handoff is ready to run. */
@@ -258,6 +269,11 @@ interface VideoCandidate {
   requestText: string;
 }
 
+interface AudioCandidate {
+  original: string;
+  resolved: string;
+}
+
 type VideoRoute = "native" | "frames";
 
 const VIDEO_PLACEHOLDER_PREFIX = "[Video: ";
@@ -265,6 +281,11 @@ const VIDEO_PLACEHOLDER_SUFFIX = "]";
 const VIDEO_UNAVAILABLE = `${VIDEO_PLACEHOLDER_PREFIX}description unavailable${VIDEO_PLACEHOLDER_SUFFIX}`;
 const VIDEO_PATH_MARKER_PREFIX = "[Local video file: ";
 const VIDEO_PATH_MARKER_SUFFIX = "]";
+const AUDIO_PLACEHOLDER_PREFIX = "[Audio: ";
+const AUDIO_PLACEHOLDER_SUFFIX = "]";
+const AUDIO_UNAVAILABLE = `${AUDIO_PLACEHOLDER_PREFIX}transcription unavailable${AUDIO_PLACEHOLDER_SUFFIX}`;
+const AUDIO_PATH_MARKER_PREFIX = "[Local audio file: ";
+const AUDIO_PATH_MARKER_SUFFIX = "]";
 
 function resolveConfiguredModel(modelRegistry: ModelRegistryLike, ref: string | null): Model<Api> | null {
   if (!ref) return null;
@@ -286,9 +307,21 @@ function makeVideoPathMarker(videoPath: string): string {
 }
 
 function extractVideoPathMarker(text: string): string | null {
+  return extractLocalPathMarker(text, VIDEO_PATH_MARKER_PREFIX, VIDEO_PATH_MARKER_SUFFIX);
+}
+
+function makeAudioPathMarker(audioPath: string): string {
+  return `${AUDIO_PATH_MARKER_PREFIX}${audioPath}${AUDIO_PATH_MARKER_SUFFIX}`;
+}
+
+function extractAudioPathMarker(text: string): string | null {
+  return extractLocalPathMarker(text, AUDIO_PATH_MARKER_PREFIX, AUDIO_PATH_MARKER_SUFFIX);
+}
+
+function extractLocalPathMarker(text: string, prefix: string, suffix: string): string | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith(VIDEO_PATH_MARKER_PREFIX) || !trimmed.endsWith(VIDEO_PATH_MARKER_SUFFIX)) return null;
-  const path = trimmed.slice(VIDEO_PATH_MARKER_PREFIX.length, -VIDEO_PATH_MARKER_SUFFIX.length).trim();
+  if (!trimmed.startsWith(prefix) || !trimmed.endsWith(suffix)) return null;
+  const path = trimmed.slice(prefix.length, -suffix.length).trim();
   return path || null;
 }
 
@@ -298,11 +331,18 @@ function stripImageFence(text: string): string {
 }
 
 function resolveLocalVideoPath(candidate: string, cwd: string): string | null {
+  return resolveLocalMediaPath(candidate, cwd, isVideoExtension);
+}
+
+function resolveLocalAudioPath(candidate: string, cwd: string): string | null {
+  return resolveLocalMediaPath(candidate, cwd, isAudioExtension);
+}
+
+function resolveLocalMediaPath(candidate: string, cwd: string, acceptsExtension: (ext: string) => boolean): string | null {
   if (!candidate) return null;
   const expanded = candidate.startsWith("~/") ? join(homedir(), candidate.slice(2)) : candidate;
   const absolute = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
-  if (!existsSync(absolute)) return null;
-  if (!isVideoExtension(extname(absolute))) return null;
+  if (!existsSync(absolute) || !acceptsExtension(extname(absolute))) return null;
   return absolute;
 }
 
@@ -318,9 +358,21 @@ function collectVideoCandidatesFromText(text: string, cwd: string, requestText: 
   return out;
 }
 
+function collectAudioCandidatesFromText(text: string, cwd: string): AudioCandidate[] {
+  const seen = new Set<string>();
+  const out: AudioCandidate[] = [];
+  for (const candidate of extractAudioPathsFromText(text)) {
+    const resolved = resolveLocalAudioPath(candidate, cwd);
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push({ original: candidate, resolved });
+  }
+  return out;
+}
+
 function rememberRecentText(recentTexts: string[], text: string): void {
   const trimmed = text.trim();
-  if (!trimmed || extractVideoPathMarker(trimmed)) return;
+  if (!trimmed || extractVideoPathMarker(trimmed) || extractAudioPathMarker(trimmed)) return;
   recentTexts.push(trimmed);
   while (recentTexts.length > 4) recentTexts.shift();
 }
@@ -377,6 +429,12 @@ function buildFramesVideoFence(
     lines.push("- unavailable");
   }
   return `${VIDEO_PLACEHOLDER_PREFIX}${lines.join("\n")}${VIDEO_PLACEHOLDER_SUFFIX}`;
+}
+
+function buildAudioFence(asr: AsrResult): string {
+  const lines = [`provider=${asr.provider}`, "Transcript timeline:"];
+  lines.push(...asr.segments.map((segment) => `- ${formatSeconds(segment.start)}-${formatSeconds(segment.end)} ${segment.text}`));
+  return `${AUDIO_PLACEHOLDER_PREFIX}${lines.join("\n")}${AUDIO_PLACEHOLDER_SUFFIX}`;
 }
 
 function summarizeFrameTimeline(timestamps: number[], descriptions: string[]): string[] {
@@ -447,9 +505,10 @@ const IMAGE_PLACEHOLDER_SUFFIX = "]";
 const UNAVAILABLE = `${IMAGE_PLACEHOLDER_PREFIX}description unavailable${IMAGE_PLACEHOLDER_SUFFIX}`;
 const CACHE_MAX = 50;
 
-/** Simple per-hash cache: a described media item is never described twice per model/route key. */
+/** Simple per-hash caches prevent repeated media processing within a session. */
 const descriptionCache = new Map<string, Promise<string>>();
 const videoDescriptionCache = new Map<string, Promise<string>>();
+const audioDescriptionCache = new Map<string, Promise<string>>();
 
 function resolveVisionModel(modelRegistry: ModelRegistryLike): Model<Api> | null {
   return resolveConfiguredModel(modelRegistry, config.visionModel);
@@ -571,7 +630,7 @@ async function describeVideo(
   if (!model) return VIDEO_UNAVAILABLE;
 
   const route = chooseVideoRoute(requestText);
-  const videoHash = await hashVideoFile(videoPath).catch(() => `path:${videoPath}`);
+  const videoHash = await hashLocalFile(videoPath).catch(() => `path:${videoPath}`);
   const requestHash = createHash("sha256").update(requestText.trim()).digest("hex").slice(0, 12);
   const cacheKey = [
     route,
@@ -630,6 +689,37 @@ async function describeVideo(
   return promise;
 }
 
+async function describeAudio(audioPath: string, signal?: AbortSignal): Promise<string> {
+  const audioHash = await hashLocalFile(audioPath).catch(() => `path:${audioPath}`);
+  const cacheKey = `${audioHash}:${config.asrProvider}`;
+  const cached = audioDescriptionCache.get(cacheKey);
+  if (cached) return cached;
+
+  if (audioDescriptionCache.size >= CACHE_MAX) {
+    const firstKey = audioDescriptionCache.keys().next().value;
+    if (firstKey !== undefined) audioDescriptionCache.delete(firstKey);
+  }
+
+  const promise = (async (): Promise<string> => {
+    const workDir = await makeWorkDir();
+    try {
+      const audio = await normalizeAudio(audioPath, workDir, signal);
+      const asr = await transcribe(audio.path, { asrProvider: config.asrProvider }, signal);
+      return buildAudioFence(asr);
+    } catch {
+      return AUDIO_UNAVAILABLE;
+    } finally {
+      await rm(workDir, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+
+  audioDescriptionCache.set(cacheKey, promise);
+  promise.then((result) => {
+    if (result === AUDIO_UNAVAILABLE) audioDescriptionCache.delete(cacheKey);
+  });
+  return promise;
+}
+
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -639,6 +729,7 @@ export default function (pi: ExtensionAPI) {
     config = readConfig();
     descriptionCache.clear();
     videoDescriptionCache.clear();
+    audioDescriptionCache.clear();
   });
 
   // PRIMARY injection: read tool's tool_result.
@@ -648,8 +739,9 @@ export default function (pi: ExtensionAPI) {
     const content = event.content;
     if (!Array.isArray(content)) return;
     const imageTarget = isImageHandoffTarget(ctx.model);
+    const audioTarget = isAudioConfigured();
     const videoTarget = isVideoConfigured();
-    if (!imageTarget && !videoTarget) return;
+    if (!imageTarget && !audioTarget && !videoTarget) return;
 
     const imgs: ExtractedImage[] = [];
     if (imageTarget) {
@@ -660,6 +752,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const readPath = typeof event.input?.path === "string" ? event.input.path : null;
+    const audioPath = readPath ? resolveLocalAudioPath(readPath, ctx.cwd) : null;
     const videoPath = readPath ? resolveLocalVideoPath(readPath, ctx.cwd) : null;
 
     let descs: string[] = [];
@@ -693,6 +786,10 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    if (audioPath && audioTarget) {
+      next.push({ type: "text", text: makeAudioPathMarker(audioPath) } satisfies TextContent);
+      changed = true;
+    }
     if (videoPath && videoTarget) {
       next.push({ type: "text", text: makeVideoPathMarker(videoPath) } satisfies TextContent);
       changed = true;
@@ -701,16 +798,18 @@ export default function (pi: ExtensionAPI) {
     if (changed) return { content: next };
   });
 
-  // FALLBACK injection: context event (catches user-attached, pasted images and video paths).
+  // FALLBACK injection: context event (catches user-attached media and pasted local paths).
   pi.on("context", async (event, ctx) => {
     if (!isConfigured()) return;
     const messages = event.messages as unknown as Array<Record<string, unknown>>;
     if (!Array.isArray(messages)) return;
     const imageTarget = isImageHandoffTarget(ctx.model);
+    const audioTarget = isAudioConfigured();
     const videoTarget = isVideoConfigured();
-    if (!imageTarget && !videoTarget) return;
+    if (!imageTarget && !audioTarget && !videoTarget) return;
 
     const byHash = new Map<string, ExtractedImage>();
+    const byAudioPath = new Map<string, AudioCandidate>();
     const byVideoPath = new Map<string, VideoCandidate>();
     let anyImage = false;
     const recentTexts: string[] = [];
@@ -733,26 +832,36 @@ export default function (pi: ExtensionAPI) {
           typeof (block as { text?: string }).text === "string"
         ) {
           const text = (block as { text: string }).text;
-          const markerPath = extractVideoPathMarker(text);
-          if (markerPath) {
-            const resolved = resolveLocalVideoPath(markerPath, ctx.cwd);
-            if (resolved) {
-              byVideoPath.set(resolved, {
-                original: markerPath,
-                resolved,
-                requestText: requestTextForMarker(recentTexts) || markerPath,
-              });
-            }
-          } else {
-            for (const candidate of collectVideoCandidatesFromText(text, ctx.cwd, text)) {
-              byVideoPath.set(candidate.resolved, candidate);
+          if (audioTarget) {
+            const audioMarkerPath = extractAudioPathMarker(text);
+            if (audioMarkerPath) {
+              const resolved = resolveLocalAudioPath(audioMarkerPath, ctx.cwd);
+              if (resolved) byAudioPath.set(resolved, { original: audioMarkerPath, resolved });
+            } else {
+              for (const candidate of collectAudioCandidatesFromText(text, ctx.cwd)) byAudioPath.set(candidate.resolved, candidate);
             }
           }
-          rememberRecentText(recentTexts, text);
+
+          if (videoTarget) {
+            const videoMarkerPath = extractVideoPathMarker(text);
+            if (videoMarkerPath) {
+              const resolved = resolveLocalVideoPath(videoMarkerPath, ctx.cwd);
+              if (resolved) {
+                byVideoPath.set(resolved, {
+                  original: videoMarkerPath,
+                  resolved,
+                  requestText: requestTextForMarker(recentTexts) || videoMarkerPath,
+                });
+              }
+            } else {
+              for (const candidate of collectVideoCandidatesFromText(text, ctx.cwd, text)) byVideoPath.set(candidate.resolved, candidate);
+            }
+            rememberRecentText(recentTexts, text);
+          }
         }
       }
     }
-    if (!anyImage && byVideoPath.size === 0) return;
+    if (!anyImage && byAudioPath.size === 0 && byVideoPath.size === 0) return;
 
     const descs = new Map<string, string>();
     if (anyImage && isImageConfigured()) {
@@ -763,6 +872,13 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+
+    const audioDescs = new Map<string, string>();
+    if (byAudioPath.size > 0 && audioTarget) {
+      for (const candidate of byAudioPath.values()) {
+        audioDescs.set(candidate.resolved, await describeAudio(candidate.resolved, ctx.signal));
+      }
+    }
     const videoDescs = new Map<string, string>();
     if (byVideoPath.size > 0 && videoTarget) {
       for (const candidate of byVideoPath.values()) {
@@ -793,27 +909,29 @@ export default function (pi: ExtensionAPI) {
           typeof (block as { text?: string }).text === "string"
         ) {
           const text = (block as { text: string }).text;
-          const markerPath = extractVideoPathMarker(text);
-          const markerResolved = markerPath ? resolveLocalVideoPath(markerPath, ctx.cwd) : null;
-          if (markerResolved && videoDescs.has(markerResolved)) {
-            next.push({ type: "text", text: videoDescs.get(markerResolved) ?? VIDEO_UNAVAILABLE });
+          const audioMarkerPath = extractAudioPathMarker(text);
+          const videoMarkerPath = extractVideoPathMarker(text);
+          const markerDescriptions = [
+            audioMarkerPath ? audioDescs.get(resolveLocalAudioPath(audioMarkerPath, ctx.cwd) ?? "") : undefined,
+            videoMarkerPath ? videoDescs.get(resolveLocalVideoPath(videoMarkerPath, ctx.cwd) ?? "") : undefined,
+          ].filter((value): value is string => !!value);
+          if (markerDescriptions.length > 0) {
+            next.push({ type: "text", text: markerDescriptions.join("\n\n") });
             touched = true;
             continue;
           }
 
-          const candidates = collectVideoCandidatesFromText(text, ctx.cwd);
-          if (candidates.length > 0) {
-            const unique = [...new Set(candidates.map((candidate) => candidate.resolved))]
-              .map((resolved) => videoDescs.get(resolved))
-              .filter((value): value is string => !!value);
-            if (unique.length > 0) {
-              next.push({ type: "text", text: `${text}\n\n${unique.join("\n\n")}` });
-              touched = true;
-              continue;
-            }
+          const descriptions = [
+            ...collectAudioCandidatesFromText(text, ctx.cwd).map((candidate) => audioDescs.get(candidate.resolved)),
+            ...collectVideoCandidatesFromText(text, ctx.cwd).map((candidate) => videoDescs.get(candidate.resolved)),
+          ].filter((value): value is string => !!value);
+          if (descriptions.length > 0) {
+            next.push({ type: "text", text: `${text}\n\n${[...new Set(descriptions)].join("\n\n")}` });
+            touched = true;
+            continue;
           }
-        }
 
+        }
         next.push(block);
       }
       if (touched) {
@@ -824,24 +942,25 @@ export default function (pi: ExtensionAPI) {
     if (changed) return { messages: event.messages };
   });
 
-  // Image and video handoff have independent activation rules.
+  // Image, audio, and video handoff have independent activation rules.
   pi.on("model_select", (_event, ctx) => {
     if (!ctx.hasUI) return;
     if (!isConfigured()) return;
     const model = ctx.model;
     if (!model) return;
     const imageTarget = isImageHandoffTarget(model);
+    const audioTarget = isAudioConfigured();
     const videoTarget = isVideoConfigured();
-    if (imageTarget || videoTarget) {
+    if (imageTarget || audioTarget || videoTarget) {
       ctx.ui.notify(
-        `pi-sense: active — image handoff=${imageTarget ? "on" : "off (active model supports images)"}; video handoff=${videoTarget ? "on" : "off"}; video model=${effectiveVideoModel() ?? "(none)"}`,
+        `pi-sense: active — image handoff=${imageTarget ? "on" : "off (active model supports images)"}; audio handoff=${audioTarget ? "on" : "off"}; video handoff=${videoTarget ? "on" : "off"}; video model=${effectiveVideoModel() ?? "(none)"}`,
         "info",
       );
     }
   });
 
   pi.registerCommand("sense", {
-    description: "Configure media handoff — pick a vision/video model to describe images and videos for text-only models",
+    description: "Configure image, local-audio, and local-video handoff for text-only models",
     handler: async (args, ctx) => {
       await handleCommand(ctx, args.trim());
     },
@@ -867,6 +986,7 @@ async function handleCommand(ctx: ExtensionCommandContext, args: string): Promis
         "  /sense                       Show status",
         "  /sense status               Same as /sense",
         "  /sense model <provider/id>         Set the vision model",
+        "  /sense audio <on|off>               Toggle local-audio transcription",
         "  /sense video <on|off>               Toggle video handoff",
         "  /sense video-model <provider/id>    Set the video model (blank to reuse vision model)",
         "  /sense route <auto|native|frames>   Set video route selection",
@@ -905,6 +1025,16 @@ async function handleCommand(ctx: ExtensionCommandContext, args: string): Promis
       return;
     }
     updateConfig(ctx, (c) => ({ ...c, autoHandoff: val === "on" }), `Auto handoff ${val}.`);
+    return;
+  }
+
+  if (sub === "audio") {
+    const val = rest.toLowerCase();
+    if (val !== "on" && val !== "off") {
+      ctx.ui.notify("Usage: /sense audio <on|off>", "warning");
+      return;
+    }
+    updateConfig(ctx, (c) => ({ ...c, audioEnabled: val === "on" }), `Audio handoff ${val}.`);
     return;
   }
 
@@ -1066,6 +1196,7 @@ function showStatus(ctx: ExtensionCommandContext): void {
   lines.push(`Vision handoff: ${config.enabled ? "enabled" : "disabled"}`);
   lines.push(`Vision model: ${config.visionModel ?? "(none — set with /sense model)"}`);
   lines.push(`Auto handoff: ${config.autoHandoff ? "on" : "off"}`);
+  lines.push(`Audio handoff: ${config.audioEnabled ? "enabled" : "disabled"}`);
   lines.push(`Video handoff: ${config.videoEnabled ? "enabled" : "disabled"}`);
   lines.push(`Video model: ${effectiveVideoModel() ?? "(none)"}${config.videoModel ? " (explicit)" : " (reuses vision model)"}`);
   lines.push(`Video route: ${config.videoRoute}`);
@@ -1076,8 +1207,10 @@ function showStatus(ctx: ExtensionCommandContext): void {
   lines.push(`Adaptive sampling: ${config.enableAdaptiveSampling ? "on" : "off"} (reserved)`);
   const model = ctx.model;
   const imageActive = isImageConfigured() && isImageHandoffTarget(model);
+  const audioActive = isAudioConfigured();
   const videoActive = isVideoConfigured();
   lines.push(`Image handoff for current model (${model ? formatModelRef(model.provider, model.id) : "none"}): ${imageActive ? "yes" : "no"}`);
+  lines.push(`Audio handoff for local paths: ${audioActive ? "yes" : "no"} (local ASR)`);
   lines.push(`Video handoff for local paths: ${videoActive ? "yes" : "no"} (independent of active-model image input)`);
   ctx.ui.notify(lines.join("\n"), "info");
 }

@@ -1,9 +1,10 @@
 # pi-sense
 
-A [pi coding agent](https://github.com/earendil-works/pi-coding-agent) extension that gives text-only models media understanding — images **and** local videos.
+A [pi coding agent](https://github.com/earendil-works/pi-coding-agent) extension that gives text-only models media understanding — images, local audio, and local videos.
 
-For images, when the active model doesn't support image input, `pi-sense` automatically describes the image with a vision-capable model you pick. For local videos, video handoff is independent of the active model's image capability: when enabled, `pi-sense` describes the video and feeds the text result to the active model. Video understanding uses a **dual-path strategy**:
+For images, when the active model doesn't support image input, `pi-sense` automatically describes the image with a vision-capable model you pick. For local audio, it transcribes speech with local ASR and injects a timestamped transcript. For local videos, video handoff is independent of the active model's image capability: when enabled, `pi-sense` describes the video and feeds the text result to the active model. Video understanding uses a **dual-path strategy**:
 
+- **Audio input** (`.mp3`, `.m4a`, `.wav`, and more) → local ASR transcript
 - **Content questions** ("what happens in this video?") → native video model (MiniMax-M3)
 - **Temporal questions** ("what happens at 0:03?") → local frame extraction + ASR
 
@@ -13,25 +14,28 @@ For images, when the active model doesn't support image input, `pi-sense` automa
 # 1. Install
 pi install pi-sense
 
-# 2. Configure a vision/video model
+# 2. Configure a vision/video model when you need image or video understanding
 /sense model minimax-cn/MiniMax-M3
 
-# 3. Enable video handoff
+# 3. Enable the media routes you want (audio is enabled by default)
+/sense audio on
 /sense video on
 ```
 
-That's it. Now when you ask pi about an image or local video file, it will describe the media and feed the text to the active model — even if that model doesn't support images or videos.
+Now pi can inject a local-audio transcript, image description, or local-video description as text — even when the active model does not accept that media type.
 
 ## How It Works
 
 ```
-agent reads image / mentions video path
+agent reads image / local audio / mentions video path
   │
   ▼
 tool_result ── image → vision model → text description
+  │            audio → path marker for local ASR
   │            video → path marker for routing
   ▼
 context     ── remaining images → cached text
+  │            audio path → local ASR transcript
   │            video path → native (what) or frames+ASR (when)
   ▼
 text-only model receives text, not raw media
@@ -43,6 +47,7 @@ text-only model receives text, not raw media
 /sense                                 Show status
 /sense status                          Same as /sense
 /sense model <provider/id>             Set the vision/video model
+/sense audio <on|off>                  Toggle local-audio transcription
 /sense video <on|off>                  Toggle video handoff
 /sense video-model <provider/id>       Set a separate video model (blank = reuse vision model)
 /sense route <auto|native|frames>      Set video route selection
@@ -67,6 +72,7 @@ Config lives at `~/.pi/agent/pi-sense.json`:
   "enabled": true,
   "visionModel": "minimax-cn/MiniMax-M3",
   "autoHandoff": true,
+  "audioEnabled": true,
   "videoEnabled": true,
   "videoModel": null,
   "videoRoute": "auto",
@@ -83,6 +89,7 @@ Config lives at `~/.pi/agent/pi-sense.json`:
 | `enabled` | `true` | Master switch for media handoff |
 | `visionModel` | `null` | Model used to describe images and video frames |
 | `autoHandoff` | `true` | Only inject **image** descriptions into active models that lack image input |
+| `audioEnabled` | `true` | Enable local-audio transcription with the configured ASR tool |
 | `videoEnabled` | `true` | Enable local-video handoff, independent of active-model image input |
 | `videoModel` | `null` | Separate model for video; `null` = reuse `visionModel` |
 | `videoRoute` | `auto` | `auto` = detect temporal intent, `native` = force native, `frames` = force frames+ASR |
@@ -91,6 +98,10 @@ Config lives at `~/.pi/agent/pi-sense.json`:
 | `asrProvider` | `auto` | `auto` = whisper-cli → faster-whisper, or explicit path |
 | `maxVideoFrames` | `120` | Frame-route budget (1–600) |
 | `enableAdaptiveSampling` | `false` | Reserved preference; not consumed by the 0.0.1 pipeline |
+
+## Audio Input
+
+`pi-sense` accepts local audio paths from a prompt or the `read` tool, including `mp3`, `wav`, `m4a`, `aac`, `flac`, `ogg`, `opus`, `wma`, `aif`, and `aiff`. It normalizes each file to 16 kHz mono WAV with `ffmpeg`, runs local ASR, and injects a timestamped `[Audio: ...]` transcript. This route needs no vision or video model; toggle it with `/sense audio on|off`.
 
 ## Video Understanding
 
@@ -126,11 +137,11 @@ This route provides **deterministic, verifiable** time-content mapping — unlik
 
 | Tool | Required for | How to install |
 |---|---|---|
-| `ffmpeg` / `ffprobe` | Frame + audio extraction | `brew install ffmpeg` |
-| `whisper-cli` | ASR (preferred) | `brew install whisper-cpp` + download a ggml model |
-| faster-whisper | ASR (fallback) | `pip install faster-whisper` in a venv at `~/.venvs/video-asr` |
+| `ffmpeg` / `ffprobe` | Audio normalization; video frame/audio extraction | `brew install ffmpeg` |
+| `whisper-cli` | Local ASR (audio input and video timeline, preferred) | `brew install whisper-cpp` + download a ggml model |
+| faster-whisper | Local ASR fallback | `pip install faster-whisper` in a venv at `~/.venvs/video-asr` |
 
-You only need ffmpeg for the frames route. The native route works without any local tools.
+You need `ffmpeg` plus one ASR tool for standalone audio input and the video frames route. The native video route works without local tools.
 
 ## Install
 
@@ -159,8 +170,11 @@ npm run typecheck
 ### Verification Scripts
 
 ```bash
-# Unit checks for path detection + temporal intent (no API key needed)
+# Unit checks for local video/audio path detection + temporal intent (no API key needed)
 node scripts/verify-paths.mjs
+
+# Standalone audio normalization + local ASR (needs ffmpeg + whisper; pass any speech audio file)
+node scripts/verify-audio-chain.mjs /path/to/audio.m4a
 
 # Native route real-chain (needs minimax-cn API key in ~/.pi/agent/auth.json)
 node scripts/verify-native-chain.mjs
@@ -171,7 +185,8 @@ node scripts/verify-frames-chain.mjs
 
 ## Limitations
 
-- Video input is **local files only** — no YouTube URLs or screen capture
+- Audio and video input are **local files only** — no remote URLs, live audio, or screen capture
+- Standalone audio is transcribed locally; it is not sent to a configured vision/video model
 - Native video is available through **MiniMax-M3**; Gemini and Grok use the frames + ASR route in 0.0.1
 - Video handoff is enabled for local paths even when the active model supports images; use `/sense video off` if the active model handles video directly
 - Native model timestamps are **not reliable** — use the frames route for temporal accuracy

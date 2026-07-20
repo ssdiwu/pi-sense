@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { prepareVerifyBuild } from "./prepare-verify-build.mjs";
 
 const outDir = await prepareVerifyBuild();
-const { extractVideoPathsFromText } = await import(pathToFileURL(`${outDir}/video.js`).href);
+const { extractAudioPathsFromText, extractVideoPathsFromText } = await import(pathToFileURL(`${outDir}/video.js`).href);
 const { hasTemporalIntent, shouldHandoffImage, shouldHandoffVideo } = await import(pathToFileURL(`${outDir}/index.js`).href);
 
 let pass = 0;
@@ -33,6 +33,13 @@ check("relative", extractVideoPathsFromText("./vid.mp4"), ["./vid.mp4"]);
 check("home", extractVideoPathsFromText("~/Movies/demo.mp4"), ["~/Movies/demo.mp4"]);
 check("TypeScript source", extractVideoPathsFromText("index.ts /tmp/video.ts"), []);
 check("plain text", extractVideoPathsFromText("请描述这个视频"), []);
+
+console.log("\n== extractAudioPathsFromText ==");
+check("bare filename", extractAudioPathsFromText("meeting.mp3"), ["meeting.mp3"]);
+check("absolute + space", extractAudioPathsFromText("/Users/x/voice memo.m4a"), ["/Users/x/voice memo.m4a"]);
+check("file URL", extractAudioPathsFromText("file:///tmp/%E5%BD%95%E9%9F%B3.wav"), ["/tmp/录音.wav"]);
+check("video excluded", extractAudioPathsFromText("demo.mp4"), []);
+check("source excluded", extractAudioPathsFromText("asr.ts /tmp/audio.ts"), []);
 
 console.log("\n== hasTemporalIntent ==");
 for (const text of [

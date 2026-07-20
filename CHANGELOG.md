@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Added
+
+- Standalone local-audio handoff for common audio formats, normalized with ffmpeg and transcribed by local ASR into timestamped context.
+
 ### Removed
 
 - `/dvision` legacy alias for `/sense`. The command has been removed from the registry and the README no longer advertises it. Use `/sense` directly.
