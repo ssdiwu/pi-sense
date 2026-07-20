@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 0.0.3 - 2026-07-20
+
 ### Added
 
 - Standalone local-audio handoff for common audio formats, normalized with ffmpeg and transcribed by local ASR into timestamped context.
